@@ -1,5 +1,7 @@
-from fastapi import FastAPI, Query
-from fastapi.middleware.cors import CORSMiddleware
+# ============================
+#    JuridiBot - API RAG Maroc
+# ============================
+
 import os
 import faiss
 import pandas as pd
@@ -7,155 +9,184 @@ from pathlib import Path
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 from openai import OpenAI
+from pydantic import BaseModel
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-# =====================================================
-# 🔹 Chargement des variables d'environnement
-# =====================================================
+
+# ============================
+# 🔹 Création API
+# ============================
+
+app = FastAPI()
+
+# ============================
+# 🔹 Configuration générale
+# ============================
+
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
-    raise RuntimeError("❌ OPENAI_API_KEY non trouvée. Crée un fichier .env avec ta clé OpenAI.")
+    raise RuntimeError("❌ OPENAI_API_KEY manquante dans .env")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# =====================================================
-# 🔹 Configuration du projet
-# =====================================================
 BASE = Path(__file__).resolve().parents[1]
 INDEX_FILE = BASE / "data/cleaned_chunks/faiss_index.bin"
 META_FILE = BASE / "data/cleaned_chunks/chunks_meta.parquet"
 
 EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 TOP_K = 5
-DISTANCE_THRESHOLD = 7.5
-MAX_CONTEXT_CHARS = 2000
+DISTANCE_THRESHOLD = 9.5
+MAX_CONTEXT_CHARS = 7000
 
-# =====================================================
-# 🔹 Prompts d'instructions
-# =====================================================
+# ============================
+# 🔹 Prompts
+# ============================
+
 SYSTEM_PROMPT = (
-    "Tu es **JuridiBot**, un assistant juridique marocain. "
-    "Tu réponds uniquement sur la base des textes juridiques fournis "
-    "(Code du travail, Code de la famille, droit pénal, etc.). "
-    "Si la question n’a aucun rapport avec ces documents, tu dois répondre : "
-    "'Je ne peux pas répondre à cette question car elle ne figure pas dans ma base de connaissances juridiques.' "
-    "Toujours citer les sources utilisées entre crochets à la fin."
+    "Tu es JuridiBot, un assistant juridique marocain. "
+    "Tu réponds UNIQUEMENT à partir des extraits fournis. "
+    "Si les textes ne contiennent pas la réponse : "
+    "'Je ne peux pas répondre à cette question car elle ne figure pas dans ma base juridique.' "
+    "Toujours citer les sources."
 )
 
 INSTRUCTION_PROMPT = (
-    "Utilise exclusivement les extraits suivants pour formuler ta réponse. "
-    "Ne crée ni n'invente d'informations extérieures à ces textes."
+    "N'utilise que les extraits suivants. "
+    "Ne crée aucune information externe."
 )
 
-# =====================================================
-# 🔹 Chargement du modèle et des données
-# =====================================================
-print("Chargement de l’index FAISS et des métadonnées...")
+# ============================
+# 🔹 Chargement FAISS
+# ============================
+
+print("📦 Chargement index FAISS...")
 index = faiss.read_index(str(INDEX_FILE))
 df_meta = pd.read_parquet(META_FILE)
+embedder = SentenceTransformer(EMBED_MODEL)
 print(f"✅ Index chargé ({index.ntotal} vecteurs).")
 
-embedder = SentenceTransformer(EMBED_MODEL)
 
-# =====================================================
-# 🔹 Fonctions principales
-# =====================================================
-def retrieve(query: str, top_k: int = TOP_K):
-    """Recherche des passages similaires"""
+# ============================
+# 🔹 Fonctions RAG
+# ============================
+
+def retrieve(query):
     q_vec = embedder.encode([query], convert_to_numpy=True)
-    D, I = index.search(q_vec, top_k)
+    D, I = index.search(q_vec, TOP_K)
+
     results = []
     for idx, dist in zip(I[0], D[0]):
         row = df_meta.iloc[idx]
         results.append({
             "chunk_id": row["chunk_id"],
-            "source": row.get("source", "Inconnue"),
+            "source": row["source"],
+            "article": row.get("article", ""),  # 🔥 ajoute article avec fallback vide
             "text": row["text"],
             "distance": float(dist)
         })
     return results
 
 
+
+def filter_relevant(chunks):
+    filtered = [c for c in chunks if c["distance"] < DISTANCE_THRESHOLD]
+    return filtered if filtered else chunks[:2]
+
+
 def build_context(chunks):
-    """Construit le contexte"""
-    context_parts, total_len = [], 0
+    parts = []
+    total = 0
     for c in chunks:
-        passage = f"[{c['source']}] {c['text']}"
-        if total_len + len(passage) > MAX_CONTEXT_CHARS:
+        block = f"[{c['source']}] {c['text']}"
+        if total + len(block) > MAX_CONTEXT_CHARS:
             break
-        context_parts.append(passage)
-        total_len += len(passage)
-    return "\n\n---\n\n".join(context_parts)
+        parts.append(block)
+        total += len(block)
+    return "\n\n---\n\n".join(parts)
 
 
-def ask_openai(question, context, model="gpt-4o-mini", temperature=0.0):
-    """Appel à OpenAI"""
-    messages = [
+def ask_llm(question, context):
+    msgs = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": INSTRUCTION_PROMPT + "\n\nContexte :\n" + context},
-        {"role": "user", "content": "Question : " + question},
+        {"role": "user", "content": "Question : " + question}
     ]
+
     try:
         response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=800
+            model="gpt-4o-mini",
+            messages=msgs,
+            temperature=0.0,
+            max_tokens=500
         )
         return response.choices[0].message.content.strip()
+
     except Exception as e:
         return f"⚠️ Erreur OpenAI : {e}"
 
-# =====================================================
-# 🔹 Création de l’application FastAPI
-# =====================================================
-app = FastAPI(title="JuridiBot API", version="1.0", description="Assistant juridique marocain IA")
 
-# 🔸 Autoriser les requêtes Flutter
+# ============================
+# 🔹 API INPUT MODEL
+# ============================
+
+class Query(BaseModel):
+    question: str
+
+
+# ============================
+# 🔹 Endpoint API
+# ============================
+
+# Autoriser les requêtes Flutter / ngrok
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ou restreindre à ton IP locale
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# =====================================================
-# 🔹 Endpoint principal
-# =====================================================
 @app.get("/ask")
-def ask(question: str = Query(..., description="Question juridique")):
-    """Répond à une question en se basant uniquement sur les PDFs indexés"""
-    print(f"❓ Question reçue : {question}")
+def ask_api(question: str):
+    # 1) Retrieve chunks
+    chunks = retrieve(question)
+    filtered = filter_relevant(chunks)
 
-    # Étape 1 : Récupération des passages
-    chunks = retrieve(question, top_k=TOP_K)
-
-    # Étape 2 : Filtrage par distance
-    relevant_chunks = [c for c in chunks if c["distance"] < DISTANCE_THRESHOLD]
-    if not relevant_chunks:
+    if not filtered:
         return {
-            "answer": "Je ne peux pas répondre à cette question car elle ne figure pas dans ma base de connaissances juridiques.",
+            "answer": "Je ne peux pas répondre à cette question car elle ne figure pas dans ma base juridique.",
             "context_found": False,
             "sources": [],
+            "count_chunks": 0
         }
 
-    # Étape 3 : Construction du contexte
-    context = build_context(relevant_chunks)
+    # 2) Build context
+    context = build_context(filtered)
 
-    # Étape 4 : Génération de réponse
-    answer = ask_openai(question, context)
+    # 3) LLM answer
+    answer = ask_llm(question, context)
 
-    # Étape 5 : Retourner la réponse
+    # 4) Extraire tous les articles uniques
+    all_articles = []
+    for c in filtered:
+        if c["article"]:
+            # transformer en liste si séparé par des virgules
+            arts = [a.strip() for a in c["article"].split(",")]
+            all_articles.extend(arts)
+    all_articles = sorted(list(set(all_articles)))  # supprimer doublons
+
+    # 5) Retour API
     return {
         "answer": answer,
         "context_found": True,
-        "sources": list({c["source"] for c in relevant_chunks}),
-        "count_chunks": len(relevant_chunks),
+        "sources": [
+            {
+                "source": c["source"],
+                "articles": [a.strip() for a in c["article"].split(",")] if c["article"] else []
+            }
+            for c in filtered
+        ],
+        "articles": all_articles,   # ✅ tous les articles de tous les chunks
+        "count_chunks": len(filtered)
     }
-
-# =====================================================
-# 🔹 Lancer le serveur (pour test local)
-# =====================================================
-# Commande à exécuter :
-# uvicorn src.api_juridibot:app --host 0.0.0.0 --port 8000 --reload

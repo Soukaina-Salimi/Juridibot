@@ -1,3 +1,4 @@
+//chat_page.dart
 import 'package:flutter/material.dart';
 import 'package:juridibot/theme/app_theme.dart';
 import 'package:juridibot/models/message_model.dart';
@@ -26,6 +27,7 @@ class _ChatPageState extends State<ChatPage> {
     if (widget.initialMessage.isNotEmpty) {
       _sendMessage(widget.initialMessage);
     }
+    _textController.addListener(() => setState(() {}));
   }
 
   void _sendMessage(String text) async {

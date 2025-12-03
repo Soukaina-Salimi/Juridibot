@@ -106,7 +106,9 @@ class MessageBubble extends StatelessWidget {
                           ),
                         ),
                       ],
-                      if (!message.isUser && message.article != null) ...[
+                      if (!message.isUser &&
+                          message.article != null &&
+                          message.article!.isNotEmpty) ...[
                         const SizedBox(height: 6),
                         Container(
                           padding: const EdgeInsets.symmetric(
@@ -117,23 +119,48 @@ class MessageBubble extends StatelessWidget {
                             color: AppTheme.successColor.withOpacity(0.1),
                             borderRadius: BorderRadius.circular(6),
                           ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Icon(
-                                Icons.article_rounded,
-                                size: 12,
-                                color: AppTheme.successColor,
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.article_rounded,
+                                    size: 12,
+                                    color: AppTheme.successColor,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  const Text(
+                                    'Articles:',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: AppTheme.successColor,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(width: 6),
-                              Text(
-                                message.article!,
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: AppTheme.successColor,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
+                              const SizedBox(height: 4),
+                              // On affiche tous les articles dans une liste verticale
+                              ...message.article!
+                                  .split(',')
+                                  .map(
+                                    (a) => Padding(
+                                      padding: const EdgeInsets.only(
+                                        left: 18,
+                                        top: 2,
+                                      ),
+                                      child: Text(
+                                        a.trim(),
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: AppTheme.successColor,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
                             ],
                           ),
                         ),

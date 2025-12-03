@@ -1,53 +1,90 @@
 # src/build_faiss_index.py
 import json
-from pathlib import Path
-from tqdm import tqdm
-import pandas as pd
-import numpy as np
 import faiss
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+from pathlib import Path
 from sentence_transformers import SentenceTransformer
 
-# --- Config ---
-CHUNKS_FILE = Path(__file__).resolve().parents[1] / "data/cleaned_chunks/chunks.jsonl"
-INDEX_FILE = Path(__file__).resolve().parents[1] / "data/cleaned_chunks/faiss_index.bin"
-META_FILE = Path(__file__).resolve().parents[1] / "data/cleaned_chunks/chunks_meta.parquet"
-MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
-EMBED_DIM = 384  # Dimension du modèle MiniLM
 
-# --- Charger chunks ---
-chunks = []
-sources = []
-chunk_ids = []
+#  CONFIG
 
-with CHUNKS_FILE.open("r", encoding="utf-8") as f:
-    for line in f:
-        data = json.loads(line)
-        chunks.append(data["text"])
-        sources.append(data["source"])
-        chunk_ids.append(data["chunk_id"])
+BASE = Path(__file__).resolve().parents[1]
+CHUNKS_FILE = BASE / "data/cleaned_chunks/chunks_by_article.jsonl"
+INDEX_OUT = BASE / "data/cleaned_chunks/faiss_index.bin"
+META_OUT = BASE / "data/cleaned_chunks/chunks_meta.parquet"
 
-print(f"✅ {len(chunks)} chunks chargés.")
+EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+BATCH_SIZE = 32
 
-# --- Embeddings ---
-model = SentenceTransformer(MODEL_NAME)
-embeddings = model.encode(chunks, show_progress_bar=True, convert_to_numpy=True, batch_size=32)
 
-print("✅ Embeddings calculés.")
+#  LOAD CHUNKS
 
-# --- Créer index FAISS ---
-index = faiss.IndexFlatL2(EMBED_DIM)
-index.add(embeddings)
-print(f"✅ Index FAISS créé avec {index.ntotal} vecteurs.")
+def load_chunks(jsonl_path):
+    chunks = []
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            chunks.append(json.loads(line))
+    return chunks
 
-# --- Sauvegarder index FAISS et métadonnées ---
-faiss.write_index(index, str(INDEX_FILE))
-print(f"✅ Index sauvegardé : {INDEX_FILE}")
 
-# Sauvegarder métadonnées (source + chunk_id)
-df_meta = pd.DataFrame({
-    "chunk_id": chunk_ids,
-    "source": sources,
-    "text": chunks
-})
-df_meta.to_parquet(META_FILE, engine="pyarrow", index=False)
-print(f"✅ Métadonnées sauvegardées : {META_FILE}")
+
+#  EMBED USING SENTENCE TRANSFORMERS
+
+def embed_chunks(chunks, embedder):
+    texts = [c["text"] for c in chunks]
+    embeddings = []
+
+    print(f"Vectorisation ({len(texts)} chunks)...")
+
+    for i in tqdm(range(0, len(texts), BATCH_SIZE)):
+        batch = texts[i:i + BATCH_SIZE]
+        vecs = embedder.encode(batch, convert_to_numpy=True)
+        embeddings.append(vecs)
+
+    return np.vstack(embeddings)
+
+
+
+#  BUILD FAISS INDEX
+
+def build_faiss_index(embeddings):
+    dim = embeddings.shape[1]  # 768 dimensions
+    index = faiss.IndexFlatL2(dim)
+    index.add(embeddings)
+    return index
+
+
+
+#  MAIN
+
+def main():
+    print("🔵 Chargement des chunks…")
+    chunks = load_chunks(CHUNKS_FILE)
+    print(f"➡️ {len(chunks)} chunks chargés.\n")
+
+    embedder = SentenceTransformer(EMBED_MODEL)
+
+    # Vectorisation
+    embeddings = embed_chunks(chunks, embedder)
+    print("✅ Embeddings générés.")
+
+    # Indexation
+    index = build_faiss_index(embeddings)
+    print(f"✅ Index FAISS construit ({index.ntotal} vecteurs).")
+
+    # Sauvegarde
+    faiss.write_index(index, str(INDEX_OUT))
+    print(f"💾 Index enregistré → {INDEX_OUT}")
+
+    df = pd.DataFrame(chunks)
+    df["embedding_dim"] = embeddings.shape[1]
+    df.to_parquet(META_OUT, index=False)
+    print(f"💾 Métadonnées enregistrées → {META_OUT}")
+
+    print("\n🎉 Vectorisation + Indexation FAISS terminée !")
+
+
+if __name__ == "__main__":
+    main()
