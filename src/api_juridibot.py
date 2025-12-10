@@ -1,3 +1,4 @@
+# api jurdidibot.py
 # ============================
 #    JuridiBot - API RAG Maroc
 # ============================
@@ -82,7 +83,7 @@ def retrieve(query):
         results.append({
             "chunk_id": row["chunk_id"],
             "source": row["source"],
-            "article": row.get("article", ""),  # 🔥 ajoute article avec fallback vide
+            "article": row.get("article", ""), 
             "text": row["text"],
             "distance": float(dist)
         })
@@ -118,7 +119,7 @@ def ask_llm(question, context):
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=msgs,
-            temperature=0.0,
+            temperature=0.0, #ne pas inventer , reponse directe
             max_tokens=500
         )
         return response.choices[0].message.content.strip()
@@ -147,7 +148,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/ask")
+@app.get("/ask") 
 def ask_api(question: str):
     # 1) Retrieve chunks
     chunks = retrieve(question)
